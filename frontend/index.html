@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatGPT Business Owner 降级控制台</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                    <path d="M2 17l10 5 10-5" />
+                    <path d="M2 12l10 5 10-5" />
+                </svg>
+                <h1>ChatGPT Owner 降级控制台</h1>
+            </div>
+            <p class="subtitle">批量将 ChatGPT Team/Enterprise 所有者降级为管理员或普通成员</p>
+        </header>
+
+        <!-- 统计面板 -->
+        <div class="stats-panel">
+            <div class="stat-card">
+                <div class="stat-icon total">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                        <circle cx="9" cy="7" r="4" />
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                    </svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-value" id="totalCount">0</span>
+                    <span class="stat-label">总计处理</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon success">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                        <polyline points="22 4 12 14.01 9 11.01" />
+                    </svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-value" id="successCount">0</span>
+                    <span class="stat-label">成功</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon failed">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="15" y1="9" x2="9" y2="15" />
+                        <line x1="9" y1="9" x2="15" y2="15" />
+                    </svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-value" id="failedCount">0</span>
+                    <span class="stat-label">失败</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主面板 -->
+        <div class="main-panel">
+            <!-- 输入区域 -->
+            <div class="input-section">
+                <div class="section-header">
+                    <h2>Token 输入</h2>
+                    <div class="role-toggle">
+                        <label class="toggle-label">目标角色：</label>
+                        <div class="toggle-buttons">
+                            <button class="toggle-btn active" data-role="standard-user">普通成员</button>
+                            <button class="toggle-btn" data-role="account-admin">管理员</button>
+                        </div>
+                    </div>
+                </div>
+
+                <textarea id="tokenInput" placeholder="粘贴 accessToken 或完整的 Session JSON
+支持多个 Token，每行一个
+
+获取方法：
+1. 登录 chatgpt.com
+2. 访问 https://chatgpt.com/api/auth/session
+3. 复制整个 JSON 或其中的 accessToken 字段"></textarea>
+
+                <div class="action-buttons">
+                    <button class="btn btn-primary" id="startBtn" onclick="startProcess()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                        开始批量处理
+                    </button>
+                    <button class="btn btn-secondary" onclick="clearAll()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                        清空
+                    </button>
+                </div>
+            </div>
+
+            <!-- 结果区域 -->
+            <div class="result-section">
+                <div class="section-header">
+                    <h2>处理结果</h2>
+                    <span class="processing-indicator" id="processingIndicator" style="display: none;">
+                        <span class="spinner"></span>
+                        处理中...
+                    </span>
+                </div>
+
+                <div class="result-list" id="resultList">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+                            <rect x="9" y="3" width="6" height="4" rx="1" />
+                            <path d="M9 12h6" />
+                            <path d="M9 16h6" />
+                        </svg>
+                        <p>暂无处理记录</p>
+                        <span>输入 Token 后点击开始处理</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 使用说明 -->
+        <div class="help-section">
+            <h3>使用说明</h3>
+            <div class="help-steps">
+                <div class="step">
+                    <span class="step-number">1</span>
+                    <div class="step-content">
+                        <h4>登录 ChatGPT</h4>
+                        <p>使用你的 Owner 账号登录 chatgpt.com</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <span class="step-number">2</span>
+                    <div class="step-content">
+                        <h4>获取 Session</h4>
+                        <p>访问 <a href="https://chatgpt.com/api/auth/session"
+                                target="_blank">chatgpt.com/api/auth/session</a></p>
+                    </div>
+                </div>
+                <div class="step">
+                    <span class="step-number">3</span>
+                    <div class="step-content">
+                        <h4>复制 Token</h4>
+                        <p>复制整个 JSON 响应或 accessToken 字段的值</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <span class="step-number">4</span>
+                    <div class="step-content">
+                        <h4>开始降级</h4>
+                        <p>粘贴到上方输入框，选择目标角色，点击开始处理</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <p>⚠️ 本工具仅供合法用途使用，请确保你有权限操作目标账户</p>
+        </footer>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+
+</html>
