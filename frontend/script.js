@@ -34,8 +34,28 @@ document.querySelectorAll('.toggle-btn').forEach(btn => {
  * 支持: 纯 Token, JSON Session, 多行 Token
  */
 function parseTokens(input) {
+    const trimmedInput = input.trim();
+    if (!trimmedInput) return [];
+
+    // First try: whole input is one complete session JSON.
+    if (trimmedInput.startsWith('{') && trimmedInput.endsWith('}')) {
+        try {
+            const json = JSON.parse(trimmedInput);
+            if (json.accessToken) {
+                return [{
+                    raw: trimmedInput,
+                    accessToken: json.accessToken,
+                    accountId: json.account?.id,
+                    email: json.user?.email
+                }];
+            }
+        } catch (e) {
+            // Continue with line-by-line parsing.
+        }
+    }
+
     const tokens = [];
-    const lines = input.trim().split('\n').filter(line => line.trim());
+    const lines = trimmedInput.split('\n').filter(line => line.trim());
 
     for (const line of lines) {
         const trimmed = line.trim();
@@ -55,15 +75,31 @@ function parseTokens(input) {
                     continue;
                 }
             } catch (e) {
-                // 不是有效的 JSON，当作普通 token 处理
+                // 不是完整 JSON，继续后续规则
             }
         }
 
-        // 纯 Token (JWT 格式)
-        if (trimmed.includes('.') && trimmed.length > 100) {
+        // Handle line format: "accessToken": "xxx"
+        const accessTokenField = trimmed.match(/"accessToken"\s*:\s*"([^"]+)"/);
+        if (accessTokenField?.[1]) {
             tokens.push({
-                raw: trimmed,
-                accessToken: trimmed,
+                raw: accessTokenField[1],
+                accessToken: accessTokenField[1],
+                accountId: null,
+                email: null
+            });
+            continue;
+        }
+
+        // 纯 Token (strict JWT format)
+        const jwtCandidate = trimmed
+            .replace(/^["']?accessToken["']?\s*:\s*["']/, '')
+            .replace(/[",\s]+$/, '');
+        const isJwt = /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/.test(jwtCandidate);
+        if (isJwt && jwtCandidate.length > 100) {
+            tokens.push({
+                raw: jwtCandidate,
+                accessToken: jwtCandidate,
                 accountId: null,
                 email: null
             });

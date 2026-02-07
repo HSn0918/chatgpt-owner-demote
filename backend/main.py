@@ -14,6 +14,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 
 from DrissionPage import Chromium, ChromiumOptions
@@ -123,17 +124,23 @@ def extract_user_info(token: str, session_data: dict = None) -> dict:
 
 def create_browser():
     """创建带有反检测配置的浏览器实例"""
-    options = ChromiumOptions().auto_port()
+    options = ChromiumOptions()
     
-    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+    ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
     options.set_user_agent(ua)
+
+    # Use a persistent local profile for CF clearance cookies.
+    profile_dir = os.getenv("BROWSER_USER_DATA_DIR", os.path.abspath("./.browser-profile"))
+    options.set_user_data_path(profile_dir)
+    options.set_user(os.getenv("BROWSER_PROFILE", "Default"))
     
-    headless = os.getenv('HEADLESS', 'true').lower() == 'true'
+    headless = os.getenv('HEADLESS', 'false').lower() == 'true'
     if headless:
         options.set_argument('--headless=new')
     
-    options.set_argument('--incognito')
-    options.set_argument('--disable-blink-features=AutomationControlled')
+    # Optional anti-detection tweaks. Keep off by default to avoid over-fingerprinting.
+    if os.getenv('ANTI_DETECTION', 'false').lower() == 'true':
+        options.set_argument('--disable-blink-features=AutomationControlled')
     options.set_argument('--no-sandbox')
     options.set_argument('--disable-dev-shm-usage')
     options.set_argument('--disable-gpu')
@@ -161,6 +168,106 @@ def inject_anti_detection(page):
         logger.warning(f"注入反检测脚本失败: {e}")
 
 
+def normalize_access_token(raw_value: str) -> tuple[str, Optional[dict]]:
+    """Normalize token input from UI and optionally return parsed session JSON."""
+    raw = raw_value.strip()
+    session_data = None
+
+    if raw.startswith('{'):
+        try:
+            session_data = json.loads(raw)
+            token = session_data.get("accessToken", "").strip()
+            if token:
+                return token, session_data
+            raise ValueError("accessToken not found in session data")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format: {e}") from e
+
+    # Handle lines like: "accessToken": "xxx..."
+    match = re.search(r'"accessToken"\s*:\s*"([^"]+)"', raw)
+    if match:
+        return match.group(1).strip(), None
+
+    # Strip common wrappers/trailing separators and keep JWT-looking token.
+    candidate = raw.strip().strip(",").strip().strip('"').strip("'")
+    if candidate.lower().startswith("accesstoken:"):
+        candidate = candidate.split(":", 1)[1].strip().strip('"').strip("'")
+
+    return candidate, None
+
+
+def is_cf_block_text(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+
+    t = text.lower()
+    markers = (
+        "enable javascript and cookies to continue",
+        "cf_chl_opt",
+        "cdn-cgi/challenge-platform",
+        "just a moment",
+    )
+    return any(marker in t for marker in markers)
+
+
+def extract_cf_challenge_path(text: str) -> Optional[str]:
+    if not isinstance(text, str):
+        return None
+
+    # Prefer cUPMDTk/fa path from challenge config.
+    patterns = [
+        r'cUPMDTk:"([^"]+)"',
+        r'fa:"([^"]+)"',
+    ]
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            path = m.group(1)
+            path = path.replace('\\/', '/').replace('\\u0026', '&')
+            if path.startswith('/'):
+                return path
+    return None
+
+
+def wait_for_cf_ready(page, timeout_seconds: int = 25) -> bool:
+    """Wait until page is likely out of Cloudflare challenge state."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            page.wait.doc_loaded()
+            url = (page.url or "").lower()
+            title = (page.title or "").lower()
+            body_hint = page.run_js(
+                "return document.body ? document.body.innerText.slice(0, 300) : '';"
+            )
+
+            challenged = (
+                "cdn-cgi/challenge-platform" in url
+                or "just a moment" in title
+                or is_cf_block_text(body_hint or "")
+            )
+            if not challenged:
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+
+def wait_for_cf_ready_with_manual_hint(page, headless: bool) -> bool:
+    auto_wait = int(os.getenv("CF_AUTO_WAIT_SECONDS", "30"))
+    if wait_for_cf_ready(page, timeout_seconds=auto_wait):
+        return True
+
+    # In non-headless mode, allow manual challenge solving window.
+    if not headless:
+        manual_wait = int(os.getenv("CF_MANUAL_WAIT_SECONDS", "120"))
+        logger.warning(f"检测到 Cloudflare challenge，请在浏览器中手动完成验证，等待 {manual_wait}s ...")
+        return wait_for_cf_ready(page, timeout_seconds=manual_wait)
+
+    return False
+
+
 def execute_demote_request(access_token: str, account_id: str, user_id: str, role: str) -> dict:
     """使用浏览器执行降级请求"""
     browser = None
@@ -168,18 +275,20 @@ def execute_demote_request(access_token: str, account_id: str, user_id: str, rol
         logger.info("创建浏览器实例...")
         browser = create_browser()
         page = browser.latest_tab
+        headless = os.getenv('HEADLESS', 'false').lower() == 'true'
         
         # 打开 chatgpt.com
         logger.info("打开 chatgpt.com...")
         page.get('https://chatgpt.com')
         
-        # 注入反检测脚本
-        inject_anti_detection(page)
+        # 注入反检测脚本（默认关闭）
+        if os.getenv('ANTI_DETECTION', 'false').lower() == 'true':
+            inject_anti_detection(page)
         
         # 等待页面完全加载
         logger.info("等待页面加载...")
         page.wait.doc_loaded()
-        time.sleep(3)  # 额外等待 CF 检测完成
+        wait_for_cf_ready_with_manual_hint(page, headless=headless)
         
         current_url = page.url
         logger.info(f"当前页面 URL: {current_url}")
@@ -189,70 +298,75 @@ def execute_demote_request(access_token: str, account_id: str, user_id: str, rol
         url = f"https://chatgpt.com/backend-api/accounts/{account_id}/users/{user_id}"
         logger.info(f"目标 API: {url}")
         
-        # 使用同步方式执行 fetch
-        js_code = f'''
-        window.__demote_result = null;
-        window.__demote_done = false;
-        
-        (async function() {{
-            try {{
-                const response = await fetch("{url}", {{
+        # Use async function form that DrissionPage can call directly.
+        js_code = '''
+        async function(url, token, role) {
+            try {
+                const response = await fetch(url, {
                     method: "PATCH",
-                    headers: {{
-                        "Authorization": "Bearer {access_token}",
+                    headers: {
+                        "Authorization": "Bearer " + token,
                         "Content-Type": "application/json",
                         "Accept": "*/*"
-                    }},
-                    body: JSON.stringify({{ "role": "{role}" }})
-                }});
-                
+                    },
+                    body: JSON.stringify({ role: role })
+                });
+
                 const status = response.status;
-                let data = null;
                 const text = await response.text();
-                try {{
+                let data = null;
+                try {
                     data = JSON.parse(text);
-                }} catch (e) {{
+                } catch (e) {
                     data = text;
-                }}
-                
-                window.__demote_result = {{ status: status, data: data }};
-            }} catch (error) {{
-                window.__demote_result = {{ error: error.message }};
-            }}
-            window.__demote_done = true;
-        }})();
+                }
+
+                return { status: status, data: data };
+            } catch (error) {
+                return { error: error && error.message ? error.message : String(error) };
+            }
+        }
         '''
         
-        logger.info("执行 fetch 请求...")
-        page.run_js(js_code)
-        
-        # 等待请求完成
-        for i in range(30):
-            time.sleep(1)
-            done = page.run_js('return window.__demote_done;')
-            if done:
-                break
-            logger.info(f"等待请求完成... ({i+1}s)")
-        
-        # 获取结果
-        result = page.run_js('return JSON.stringify(window.__demote_result);')
-        logger.info(f"请求结果: {result}")
-        
-        if result and result != 'null':
-            result_data = json.loads(result)
+        for attempt in range(1, 4):
+            logger.info(f"执行 fetch 请求... (attempt {attempt}/3)")
+            result_data = page.run_js(js_code, url, access_token, role)
+            if not result_data:
+                if attempt < 3:
+                    wait_for_cf_ready(page, timeout_seconds=20)
+                    continue
+                return {"success": False, "error": "请求超时或无响应"}
+            status = result_data.get("status")
+            data = result_data.get("data")
+
             if result_data.get("error"):
                 return {"success": False, "error": result_data.get("error")}
-            elif result_data.get("status") == 200:
-                return {"success": True, "data": result_data.get("data")}
-            else:
-                return {"success": False, "status": result_data.get("status"), "data": result_data.get("data")}
-        else:
-            return {"success": False, "error": "请求超时或无响应"}
+            if status == 200:
+                return {"success": True, "data": data}
+
+            if status == 403 and is_cf_block_text(data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)):
+                logger.warning("检测到 Cloudflare challenge 拦截，等待后重试...")
+                if attempt < 3:
+                    challenge_text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+                    challenge_path = extract_cf_challenge_path(challenge_text)
+                    if challenge_path:
+                        challenge_url = f"https://chatgpt.com{challenge_path}"
+                        logger.info(f"打开 challenge 页面: {challenge_url}")
+                        page.get(challenge_url)
+                    else:
+                        page.get(url)
+
+                    wait_for_cf_ready_with_manual_hint(page, headless=headless)
+                    page.get('https://chatgpt.com')
+                    wait_for_cf_ready_with_manual_hint(page, headless=headless)
+                    continue
+
+            return {"success": False, "status": status, "data": data}
+
+        return {"success": False, "error": "请求失败，可能被 Cloudflare 持续拦截"}
             
     except Exception as e:
         logger.error(f"浏览器执行失败: {e}")
-        import traceback
-        traceback.print_exc()
         return {"success": False, "error": str(e)}
     finally:
         if browser:
@@ -274,19 +388,13 @@ async def demote_owner(request: DemoteRequest):
     if request.role not in valid_roles:
         raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {valid_roles}")
     
-    access_token = request.access_token.strip()
-    session_data = None
-    
-    # 尝试解析为 JSON (完整的 session 数据)
-    if access_token.startswith('{'):
-        try:
-            session_data = json.loads(access_token)
-            access_token = session_data.get("accessToken", "")
-            if not access_token:
-                raise HTTPException(status_code=400, detail="accessToken not found in session data")
-            logger.info("检测到完整 Session JSON")
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON format")
+    try:
+        access_token, session_data = normalize_access_token(request.access_token)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if session_data:
+        logger.info("检测到完整 Session JSON")
     else:
         logger.warning("输入的是纯 Token，建议使用完整的 Session JSON 以获取准确的 user_id 和 account_id")
     

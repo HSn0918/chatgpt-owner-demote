@@ -1,0 +1,14 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hsn0918/chatgpt-owner-demote:latest
+    container_name: chatgpt-owner-demote
+    ports:
+      - "8000:8000"
+    environment:
+      HEADLESS: "true"
+      PORT: "8000"
+    shm_size: "2gb"
+    restart: unless-stopped

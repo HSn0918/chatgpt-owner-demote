@@ -51,3 +51,8 @@ logs/
 # Temp files
 *.tmp
 *.bak
+
+# Runtime artifacts
+backend/.browser-profile/
+server.pid
+server.log
